@@ -85,7 +85,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 branch: pr.head.ref,
-                event: 'pull_request',
+                event: 'pull_request_target',
                 status: 'failure', // Only look for failed ones
                 per_page: 1 // We only need the latest
               });
@@ -95,7 +95,7 @@ jobs:
               const failedRun = runs.data.workflow_runs.find(run => run.head_sha === pr.head.sha);
 
               if (failedRun) {
-                console.log(`Found failed 'pull_request' run (ID: ${failedRun.id}). Triggering re-run...`);
+                console.log(`Found failed 'pull_request_target' run (ID: ${failedRun.id}). Triggering re-run...`);
                 
                 await github.rest.actions.reRunWorkflow({
                   owner: context.repo.owner,
@@ -105,6 +105,6 @@ jobs:
                 
                 console.log("Re-run triggered successfully.");
               } else {
-                console.log("No failed 'pull_request' runs found for this commit.");
+                console.log("No failed 'pull_request_target' runs found for this commit.");
               }
             }
