@@ -1,0 +1,87 @@
+name: Test
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+jobs:
+  check-approvals:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check Required Approvals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            console.log('pull_request', JSON.stringify(pr));
+
+            // 1. Parse the PR Body to find the "Required Reviewers" section
+            // We look for text between "Required Reviewers" and "Mandatory" based on your template
+            const regex = /#### Required Reviewers([\s\S]*?)#### Mandatory/;
+            const match = body.match(regex);
+
+            if (!match) {
+              console.log("No 'Required Reviewers' section found. Skipping check.");
+              return;
+            }
+
+            // 2. Extract usernames from the list items (e.g., "- @username")
+            const reviewersBlock = match[1];
+            const lines = reviewersBlock.split('\n');
+            const requiredUsers = lines
+              .map(line => line.trim())
+              .filter(line => line.startsWith('-') && line.length > 1) // Find lines starting with "-"
+              .map(line => {
+                // Remove the dash, whitespace, and the "@" symbol if present
+                return line.replace('-', '').trim().replace('@', '');
+              })
+              .filter(user => !user.includes('<') && user !== ""); // Ignore placeholders like <Reviewer A>
+
+            if (requiredUsers.length === 0) {
+              console.log("No specific users listed in Required Reviewers.");
+              return;
+            }
+
+            console.log(`Found required reviewers: ${JSON.stringify(requiredUsers)}`);
+
+            // 3. Fetch current reviews for this PR
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+
+            console.log('Reviews', JSON.stringify(reviews));
+
+            // 4. Calculate the latest state for each user
+            // (Users might review multiple times, we only care about their *last* action)
+            const latestReviews = {};
+            reviews.forEach(review => {
+              if (review.user) {
+                latestReviews[review.user.login] = review.state;
+              }
+            });
+
+            // 5. Verify if required users have APPROVED
+            const missingApprovals = [];
+
+            requiredUsers.forEach(user => {
+              const state = latestReviews[user];
+              console.log(`User: ${user}, State: ${state || 'No review'}`);
+              
+              if (state !== 'APPROVED') {
+                missingApprovals.push(user);
+              }
+            });
+
+            // 6. Fail the workflow if anyone is missing
+            if (missingApprovals.length > 0) {
+              core.setFailed(`The following required reviewers have not approved yet: ${missingApprovals.join(', ')}`);
+            } else {
+              console.log("All required reviewers have approved!");
+            }
