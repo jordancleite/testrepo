@@ -1,7 +1,7 @@
 name: Test
 
 on:
-  pull_request_target :
+  pull_request_target:
     types: [opened, edited, synchronize, reopened]
   pull_request_review:
     types: [submitted, dismissed]
@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
+      actions: write
     steps:
       - name: Check Required Approvals
         uses: actions/github-script@v7
@@ -41,7 +42,7 @@ jobs:
                 return line.replace('-', '').trim().replace('@', '');
               })
               .filter(user => !user.includes('<') && user !== ""); // Ignore placeholders like <Reviewer A>
-
+              
             if (requiredUsers.length === 0) {
               console.log("No specific users listed in Required Reviewers.");
               return;
@@ -56,10 +57,6 @@ jobs:
               pull_number: pr.number,
             });
 
-            console.log('Reviews', JSON.stringify(reviews));
-
-            // 4. Calculate the latest state for each user
-            // (Users might review multiple times, we only care about their *last* action)
             const latestReviews = {};
             reviews.forEach(review => {
               if (review.user) {
@@ -67,21 +64,47 @@ jobs:
               }
             });
 
-            // 5. Verify if required users have APPROVED
-            const missingApprovals = [];
+            const missingApprovals = requiredUsers.filter(user => latestReviews[user] !== 'APPROVED');
 
-            requiredUsers.forEach(user => {
-              const state = latestReviews[user];
-              console.log(`User: ${user}, State: ${state || 'No review'}`);
-              
-              if (state !== 'APPROVED') {
-                missingApprovals.push(user);
-              }
-            });
-
-            // 6. Fail the workflow if anyone is missing
             if (missingApprovals.length > 0) {
-              core.setFailed(`The following required reviewers have not approved yet: ${missingApprovals.join(', ')}`);
-            } else {
-              console.log("All required reviewers have approved!");
+              core.setFailed(`Waiting for approvals from: ${missingApprovals.join(', ')}`);
+              return; // Stop here if failed
+            }
+
+            console.log("All required reviewers have approved!");
+
+            // --- PART 3: THE FIX (Auto-Rerun Logic) ---
+            // If we are here, it means the check passed. 
+            // If this run was triggered by a REVIEW, we must check if the original PR run is stuck in "Failed".
+
+            if (context.eventName === 'pull_request_review') {
+              console.log("Review detected. Checking if the main PR workflow needs a retry...");
+              
+              // 1. Find the workflow runs for this specific branch/SHA
+              const runs = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: pr.head.ref,
+                event: 'pull_request',
+                status: 'failure', // Only look for failed ones
+                per_page: 1 // We only need the latest
+              });
+
+              // 2. Identify the run that matches the current commit
+              // (This ensures we don't re-run an old, irrelevant build)
+              const failedRun = runs.data.workflow_runs.find(run => run.head_sha === pr.head.sha);
+
+              if (failedRun) {
+                console.log(`Found failed 'pull_request' run (ID: ${failedRun.id}). Triggering re-run...`);
+                
+                await github.rest.actions.reRunWorkflow({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: failedRun.id
+                });
+                
+                console.log("Re-run triggered successfully.");
+              } else {
+                console.log("No failed 'pull_request' runs found for this commit.");
+              }
             }
