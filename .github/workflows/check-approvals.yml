@@ -1,4 +1,4 @@
-name: Test
+name: Verify Required Reviewers
 
 on:
   pull_request_target:
@@ -7,104 +7,120 @@ on:
     types: [submitted, dismissed]
 
 jobs:
-  check-approvals:
+  identify-reviewers:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: read
-      actions: write
+    outputs:
+      required_users: ${{ steps.parse.outputs.result }}
+      has_users: ${{ steps.check_empty.outputs.has_users }}
     steps:
-      - name: Check Required Approvals
+      - name: Parse PR Body
+        id: parse
         uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
             const body = pr.body || "";
-            console.log('pull_request', JSON.stringify(pr));
-
-            // 1. Parse the PR Body to find the "Required Reviewers" section
-            // We look for text between "Required Reviewers" and "Mandatory" based on your template
+            
+            // Regex to find the section between "Required Reviewers" and "Mandatory"
             const regex = /#### Required Reviewers([\s\S]*?)#### Mandatory/;
             const match = body.match(regex);
+            
+            if (!match) return []; // Return empty array if section missing
 
-            if (!match) {
-              console.log("No 'Required Reviewers' section found. Skipping check.");
-              return;
-            }
-
-            // 2. Extract usernames from the list items (e.g., "- @username")
             const reviewersBlock = match[1];
-            const lines = reviewersBlock.split('\n');
-            const requiredUsers = lines
+            
+            // Clean and extract usernames
+            const users = reviewersBlock.split('\n')
               .map(line => line.trim())
-              .filter(line => line.startsWith('-') && line.length > 1) // Find lines starting with "-"
-              .map(line => {
-                // Remove the dash, whitespace, and the "@" symbol if present
-                return line.replace('-', '').trim().replace('@', '');
-              })
-              .filter(user => !user.includes('<') && user !== ""); // Ignore placeholders like <Reviewer A>
-              
-            if (requiredUsers.length === 0) {
-              console.log("No specific users listed in Required Reviewers.");
-              return;
-            }
+              .filter(line => line.startsWith('-') && line.length > 1)
+              .map(line => line.replace('-', '').trim().replace('@', ''))
+              .filter(user => !user.includes('<') && user !== "");
+            
+            console.log("Identified users:", users);
+            return users; // This becomes steps.parse.outputs.result
 
-            console.log(`Found required reviewers: ${JSON.stringify(requiredUsers)}`);
+      - name: Check if users exist
+        id: check_empty
+        run: |
+          echo "Checking if list is empty..."
+          users='${{ steps.parse.outputs.result }}'
+          if [ "$users" == "[]" ]; then
+            echo "has_users=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_users=true" >> $GITHUB_OUTPUT
+          fi
+          
+  verify-approvals:
+    needs: identify-reviewers
+    if: needs.identify-reviewers.outputs.has_users == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      actions: write
+    
+    steps:
+      - name: Check Approval Status
+        if: github.event_name == 'pull_request_review' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // 1. Retrieve the list from Job 1's output
+            const requiredUsers = ${{ needs.identify-reviewers.outputs.required_users }};
+            const prNumber = context.payload.pull_request.number;
+            
+            console.log(`Verifying approvals for: ${requiredUsers.join(', ')}`);
 
-            // 3. Fetch current reviews for this PR
+            // 2. Fetch current reviews
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: pr.number,
+              pull_number: prNumber,
             });
 
+            // 3. Determine latest state per user
             const latestReviews = {};
             reviews.forEach(review => {
-              if (review.user) {
-                latestReviews[review.user.login] = review.state;
-              }
+              if (review.user) latestReviews[review.user.login] = review.state;
             });
 
-            const missingApprovals = requiredUsers.filter(user => latestReviews[user] !== 'APPROVED');
+            // 4. Check for missing approvals
+            const missing = requiredUsers.filter(u => latestReviews[u] !== 'APPROVED');
 
-            if (missingApprovals.length > 0) {
-              core.setFailed(`Waiting for approvals from: ${missingApprovals.join(', ')}`);
-              return; // Stop here if failed
+            if (missing.length > 0) {
+              core.setFailed(`Blocking Merge. Missing approvals from: ${missing.join(', ')}`);
+            } else {
+              console.log("Success: All required reviewers have approved.");
             }
 
-            console.log("All required reviewers have approved!");
+      # Self-Healing: If this run was triggered by an approval, fix the previous "stale" failure
+      - name: Trigger Stale Check Re-run
+        if: github.event_name == 'pull_request_review' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log("Review approved. Checking for stale failed runs...");
+            const pr = context.payload.pull_request;
+            
+            // Find the "verify-approvals" job in the 'pull_request_target' event that failed
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: pr.head.ref,
+              event: 'pull_request_target', 
+              status: 'failure',
+              per_page: 5
+            });
 
-            // --- PART 3: THE FIX (Auto-Rerun Logic) ---
-            // If we are here, it means the check passed. 
-            // If this run was triggered by a REVIEW, we must check if the original PR run is stuck in "Failed".
+            // Find the run associated with the current commit
+            const failedRun = runs.data.workflow_runs.find(run => run.head_sha === pr.head.sha);
 
-            if (context.eventName === 'pull_request_review') {
-              console.log("Review detected. Checking if the main PR workflow needs a retry...");
-              
-              // 1. Find the workflow runs for this specific branch/SHA
-              const runs = await github.rest.actions.listWorkflowRunsForRepo({
+            if (failedRun) {
+              console.log(`Restarting failed run ID: ${failedRun.id}`);
+              await github.rest.actions.reRunWorkflow({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                branch: pr.head.ref,
-                event: 'pull_request_target',
-                status: 'failure', // Only look for failed ones
-                per_page: 1 // We only need the latest
+                run_id: failedRun.id
               });
-
-              // 2. Identify the run that matches the current commit
-              // (This ensures we don't re-run an old, irrelevant build)
-              const failedRun = runs.data.workflow_runs.find(run => run.head_sha === pr.head.sha);
-
-              if (failedRun) {
-                console.log(`Found failed 'pull_request_target' run (ID: ${failedRun.id}). Triggering re-run...`);
-                
-                await github.rest.actions.reRunWorkflow({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: failedRun.id
-                });
-                
-                console.log("Re-run triggered successfully.");
-              } else {
-                console.log("No failed 'pull_request_target' runs found for this commit.");
-              }
+            } else {
+              console.log("No stale runs found.");
             }
