@@ -60,7 +60,6 @@ jobs:
     
     steps:
       - name: Check Approval Status
-        if: github.event_name == 'pull_request_review' && success()
         uses: actions/github-script@v7
         with:
           script: |
