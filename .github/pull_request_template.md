@@ -8,7 +8,7 @@
 
 #### Required Reviewers
 
-- <Reviewer A>
+- <@user>
 
 #### Mandatory
 
@@ -21,3 +21,4 @@
 - [ ] Added and ran integration tests
 - [ ] Added documentation
 - [ ] Ran build pipeline for feature branch - [Link to Build](add-link-here)
+
