@@ -18,6 +18,9 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+
+            console.log(`Context`, context);
+
             const response = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,

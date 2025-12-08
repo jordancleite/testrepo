@@ -15,15 +15,17 @@ jobs:
               uses: actions/github-script@v7
               with:
                   script: |
-                      const response = await github.rest.pulls.get({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        pull_number: context.payload.pull_request.number
-                      });
+                    const response = await github.rest.pulls.get({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      pull_number: context.payload.pull_request.number
+                    });
 
-                      const pr = response.data;
-                      const body = pr.body || "";
+                    const pr = response.data;
+                    const body = pr.body || "";
 
-                      if(pr.body.includes("SHOULD FAIL")){
-                        core.setFailed('SHOULD FAIL');
-                      }
+                    console.log(`Context`, context);
+
+                    if(pr.body.includes("SHOULD FAIL")){
+                      core.setFailed('SHOULD FAIL');
+                    }
