@@ -25,5 +25,5 @@ jobs:
                       const body = pr.body || "";
 
                       if(pr.body.includes("SHOULD FAIL")){
-                        core.setFailed(`Blocking Merge. Missing approvals from: ${missing.join(', ')}`);
+                        core.setFailed('SHOULD FAIL');
                       }
