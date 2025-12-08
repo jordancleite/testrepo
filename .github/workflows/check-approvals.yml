@@ -111,6 +111,8 @@ jobs:
               per_page: 5
             });
 
+            console.log(`Runs`, runs.data.workflow_runs);
+
             // Find the run associated with the current commit
             const failedRun = runs.data.workflow_runs.find(run => run.head_sha === pr.head.sha);
 
