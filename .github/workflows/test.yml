@@ -24,8 +24,6 @@ jobs:
                     const pr = response.data;
                     const body = pr.body || "";
 
-                    console.log(`Context`, context);
-
                     if(pr.body.includes("SHOULD FAIL")){
                       core.setFailed('SHOULD FAIL');
                     }
