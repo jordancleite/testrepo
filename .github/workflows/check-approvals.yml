@@ -8,7 +8,7 @@ on:
 
 jobs:
   identify-reviewers:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, philips-code-hub, ubuntu-latest]
     permissions:
       pull-requests: read
       actions: write
@@ -25,7 +25,7 @@ jobs:
             const regex = /#### Required Reviewers([\s\S]*?)#### Mandatory/;
             const match = body.match(regex);
 
-            if (!match) return []; // Return empty array if section missing
+            if (!match) return [];
 
             const reviewersBlock = match[1];
 
@@ -37,16 +37,18 @@ jobs:
               .filter(user => !user.includes('<') && user !== "");
 
             console.log("Identified users:", users);
-            return users; // This becomes steps.parse.outputs.result
+            return users;
 
-      - name: Check if users exist
+      - name: Check if required users exist
         id: check_empty
         run: |
           echo "Checking if list is empty..."
           users='${{ steps.parse.outputs.result }}'
           if [ "$users" == "[]" ]; then
+            echo "List is empty."
             echo "has_users=false" >> $GITHUB_OUTPUT
           else
+            echo "List is not empty."
             echo "has_users=true" >> $GITHUB_OUTPUT
           fi
 
@@ -55,26 +57,25 @@ jobs:
         if: steps.check_empty.outputs.has_users == 'true'
         with:
           script: |
-            // 1. Retrieve the list from Job 1's output
             const requiredUsers = ${{ steps.parse.outputs.result }};
             const prNumber = context.payload.pull_request.number;
 
             console.log(`Verifying approvals for: ${requiredUsers.join(', ')}`);
 
-            // 2. Fetch current reviews
+            // Fetch current reviews
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            // 3. Determine latest state per user
+            // Determine latest state per user
             const latestReviews = {};
             reviews.forEach(review => {
               if (review.user) latestReviews[review.user.login] = review.state;
             });
 
-            // 4. Check for missing approvals
+            // Check for missing approvals
             const missing = requiredUsers.filter(u => latestReviews[u] !== 'APPROVED');
 
             if (missing.length > 0) {
@@ -83,21 +84,23 @@ jobs:
               console.log("Success: All required reviewers have approved.");
             }
 
-      # Self-Healing: If this run was triggered by an approval, fix the previous "stale" failure
       - name: Trigger Stale Check Re-run
-        if: github.event_name == 'pull_request_review' && success()
+        if: success()
         uses: actions/github-script@v7
         with:
           script: |
-            console.log("Review approved. Checking for stale failed runs...");
+            const currentEvent = context.eventName;
+            const targetEvent = currentEvent === 'pull_request_review' ? 'pull_request_target' : 'pull_request_review';
+            
+            console.log(`Current event: ${currentEvent}. Looking for failed runs from: ${targetEvent}`);
             const pr = context.payload.pull_request;
 
-            // Find the "verify-approvals" job in the 'pull_request_target' event that failed
+            // Find the job in the opposite event type that failed
             const runs = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               branch: pr.head.ref,
-              event: 'pull_request_target', 
+              event: targetEvent, 
               status: 'failure',
               per_page: 5
             });
